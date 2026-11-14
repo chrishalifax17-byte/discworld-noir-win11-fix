@@ -1,0 +1,11 @@
+# Never commit game files
+*.exe
+*.dll
+*.orig
+*.iso
+*.bmv
+*.scn
+*.smp
+*.mus
+*.txt
+__pycache__/
