@@ -20,6 +20,15 @@ Fix 2 - "Cannot change directory to C:\\Discworld Noir"
   -> The three registry helpers are changed to use HKEY_CURRENT_USER.
      Run setup.ps1 afterwards to create the per-user settings.
 
+Fix 3 - fullscreen corruption (magenta / half-width picture after alt-tab)
+  Exclusive 640x480 fullscreen switches the desktop to 16-bit; when focus is
+  lost and regained the game keeps writing 16-bit pixels to a 32-bit surface.
+  -> The game always runs in its windowed renderer, but the window is made
+     borderless and screen-sized, the picture is scaled to the largest
+     centred 640:432 rectangle with black bars, mouse coordinates are mapped
+     back, and Alt+Enter no longer switches to exclusive fullscreen.
+     Needs dolomite's ddraw.dll for correct colours in windowed mode.
+
 Usage:
   py -3 patch_noir.py "C:\\Path\\To\\Game\\tin3_dxd.exe"            apply
   py -3 patch_noir.py --restore "C:\\Path\\To\\Game\\tin3_dxd.exe"  undo
@@ -120,6 +129,7 @@ def patch(data):
     struct.pack_into("<8sIIIIIIHHI", data, new_hdr, SECT_NAME, vsize, new_rva,
                      raw_size, raw_ptr, 0, 0, 0, 0, 0xE0000060)
     struct.pack_into("<H", data, pe + 6, nsec + 1)
+    sections.append((vsize, new_rva, raw_size, raw_ptr))
     struct.pack_into("<I", data, opt + 56, align(new_rva + vsize, sect_align))  # SizeOfImage
 
     rel = cave_va - (PATCH_VA + 5)
@@ -129,7 +139,117 @@ def patch(data):
     for i in hits:
         data[i + 1] = 0x01
 
+    # --- Fix 3: borderless scaled fullscreen -------------------------------
+    patch_display(data, va_to_off, cave_va + len(code))
+
     return data
+
+
+# Addresses used by the display patch (see TECHNICAL.md).
+FULLSCREEN_FLAG = 0x47B24C   # 1 = exclusive fullscreen, 0 = windowed
+CURSOR_X, CURSOR_Y = 0x479FD8, 0x479FDC
+DEST_L, DEST_T, DEST_R, DEST_B = 0x5BDF7C, 0x5BDF80, 0x5BDF84, 0x5BDF88
+IAT_GETSYSTEMMETRICS = 0x5CA440
+GAME_W, GAME_H = 640, 432
+
+DISPLAY_SITES = {
+    # va: (original bytes, replacement bytes or None for "jump/call to cave")
+    0x446744: bytes.fromhex("81e0ffffff7f" "81c80000c600"),  # style &= ~WS_POPUP; |= caption/border
+    0x44675f: bytes.fromhex("68b0010000" "6880020000"),      # SetRect(.., 640, 432)
+    0x4467c8: bytes.fromhex("6a16"),                          # SetWindowPos flags (no move)
+    0x446855: bytes.fromhex("6a15"),                          # SetWindowPos to work-area corner
+    0x448258: bytes.fromhex("e9da040000"),                    # WM_SIZE/WM_MOVE: end of rect calc
+    0x43fb61: bytes.fromhex("b8d89f4700" "8b1590df5b00" "5052" "e8fa4f0200"),  # ScreenToClient
+    0x448506: bytes.fromhex("89154cb24700"),                  # Alt+Enter: flag = !flag
+    0x4487db: bytes.fromhex("33d28955ec"),                    # WNDCLASS.hbrBackground = NULL
+}
+
+
+def patch_display(data, va_to_off, cave_va):
+    """Run windowed, borderless, screen-sized, with an aspect-correct picture
+    and mouse coordinates mapped back to the 640x432 game screen."""
+    for va, orig in DISPLAY_SITES.items():
+        off = va_to_off(va)
+        if bytes(data[off:off + len(orig)]) != orig:
+            sys.exit(f"Display patch site {va:#x} differs; not patching.")
+
+    m = lambda a: struct.pack("<I", a)
+    i32 = lambda v: struct.pack("<i", v)
+
+    # Cave D: replaces "push 432; push 640" before SetRect with the screen size.
+    cave_d = cave_va
+    d = bytearray()
+    d += b"\x5e"                                   # pop esi (return address)
+    d += b"\x6a\x01\xff\x15" + m(IAT_GETSYSTEMMETRICS)  # GetSystemMetrics(SM_CYSCREEN)
+    d += b"\x50"                                   # push eax (bottom)
+    d += b"\x6a\x00\xff\x15" + m(IAT_GETSYSTEMMETRICS)  # GetSystemMetrics(SM_CXSCREEN)
+    d += b"\x50"                                   # push eax (right)
+    d += b"\xff\xe6"                               # jmp esi
+
+    # Cave C: after WM_SIZE/WM_MOVE computes the client rect (screen coords),
+    # shrink it to the largest centred 640:432 rectangle.
+    cave_c = cave_d + len(d)
+    c = bytearray()
+    c += b"\x50\x53\x51\x52\x56"                   # push eax/ebx/ecx/edx/esi
+    c += b"\x8b\x1d" + m(DEST_R) + b"\x2b\x1d" + m(DEST_L)   # ebx = W
+    c += b"\x7e\x00"; j_done1 = len(c) - 1
+    c += b"\x8b\x0d" + m(DEST_B) + b"\x2b\x0d" + m(DEST_T)   # ecx = H
+    c += b"\x7e\x00"; j_done2 = len(c) - 1
+    c += b"\x89\xc8\x69\xc0" + i32(GAME_W) + b"\x99\xbe" + i32(GAME_H) + b"\xf7\xfe"  # eax = H*640/432
+    c += b"\x39\xd8"                               # cmp eax, ebx
+    c += b"\x7f\x00"; j_letter = len(c) - 1
+    c += b"\x89\xda\x29\xc2\xd1\xfa"               # edx = (W - newW) / 2
+    c += b"\x01\x15" + m(DEST_L) + b"\x8b\x15" + m(DEST_L) + b"\x01\xc2\x89\x15" + m(DEST_R)
+    c += b"\xeb\x00"; j_done3 = len(c) - 1
+    letter = len(c)
+    c += b"\x89\xd8\x69\xc0" + i32(GAME_H) + b"\x99\xbe" + i32(GAME_W) + b"\xf7\xfe"  # eax = W*432/640
+    c += b"\x89\xca\x29\xc2\xd1\xfa"               # edx = (H - newH) / 2
+    c += b"\x01\x15" + m(DEST_T) + b"\x8b\x15" + m(DEST_T) + b"\x01\xc2\x89\x15" + m(DEST_B)
+    done = len(c)
+    c += b"\x5e\x5a\x59\x5b\x58"                   # pop esi/edx/ecx/ebx/eax
+    c += b"\xe9" + i32(0x448737 - (cave_c + len(c) + 5))
+    for at, target in ((j_done1, done), (j_done2, done), (j_letter, letter), (j_done3, done)):
+        assert 0 < target - (at + 1) < 128
+        c[at] = target - (at + 1)
+
+    # Cave B: cursor = (screen - rect.origin) * game_size / rect_size, clamped.
+    cave_b = cave_c + len(c)
+    b = bytearray()
+    b += b"\x52\x51"                               # push edx/ecx
+    skips = []
+    for cur, lo, hi, size in ((CURSOR_X, DEST_L, DEST_R, GAME_W), (CURSOR_Y, DEST_T, DEST_B, GAME_H)):
+        b += b"\x8b\x0d" + m(hi) + b"\x2b\x0d" + m(lo)      # ecx = extent
+        b += b"\x7e\x00"; skips.append(len(b) - 1)
+        b += b"\xa1" + m(cur) + b"\x2b\x05" + m(lo)         # eax = screen - origin
+        b += b"\x69\xc0" + i32(size) + b"\x99\xf7\xf9"      # eax = eax*size/extent
+        b += b"\x85\xc0\x7d\x02\x31\xc0"                    # if eax < 0: eax = 0
+        b += b"\x3d" + i32(size - 1) + b"\x7e\x05\xb8" + i32(size - 1)  # if eax > size-1: clamp
+        b += b"\xa3" + m(cur)                               # store
+    skip = len(b)
+    b += b"\x59\x5a"                               # pop ecx/edx
+    b += b"\xe9" + i32(0x43FB73 - (cave_b + len(b) + 5))
+    for at in skips:
+        assert 0 < skip - (at + 1) < 128
+        b[at] = skip - (at + 1)
+
+    blob = d + c + b
+    assert (cave_va & 0xFFF) + len(blob) <= 0x200, "caves exceed section raw size"
+    blob_off = va_to_off(cave_va)
+    data[blob_off:blob_off + len(blob)] = blob
+
+    def put(va, new):
+        off = va_to_off(va)
+        data[off:off + len(new)] = new
+
+    put(0x446744, bytes.fromhex("81e0ffff00ff" "81c800000080"))  # WS_POPUP, no frame
+    put(0x44675f, b"\xe8" + i32(cave_d - (0x44675f + 5)) + b"\x90" * 5)
+    put(0x4467c8, bytes.fromhex("6a34"))   # SWP_NOZORDER|SWP_NOACTIVATE|SWP_FRAMECHANGED at 0,0
+    put(0x446855, bytes.fromhex("6a17"))   # keep window at 0,0 (ignore work area)
+    put(0x448258, b"\xe9" + i32(cave_c - (0x448258 + 5)))
+    put(0x43fb61, b"\xe9" + i32(cave_b - (0x43fb61 + 5)) + b"\x90" * 13)
+    put(0x448506, b"\x90" * 6)             # Alt+Enter no longer switches to exclusive fullscreen
+    put(0x4487db, bytes.fromhex("6a098f45ec"))  # hbrBackground = COLOR_WINDOWTEXT+1 (black bars)
+    put(FULLSCREEN_FLAG, struct.pack("<I", 0))  # always start windowed (borderless)
 
 
 def main(argv):

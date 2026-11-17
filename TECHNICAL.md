@@ -71,7 +71,37 @@ exits.
 **Patch:** the three `push 0x80000002` instructions become `push 0x80000001`
 (`HKEY_CURRENT_USER`). `setup.ps1` creates the matching per-user key.
 
-## 3. CD check (not patched)
+## 3. Display: borderless scaled fullscreen
+
+`0x47b24c` is the fullscreen flag (1 = exclusive 640×480, 0 = windowed). In exclusive
+mode the desktop switches to 640×480×16. After a focus change on Windows 10/11 the game
+restores its surfaces but keeps writing 16-bit pixels into what is now a 32-bit
+surface. The result is a magenta, half-width picture, and Windows also squashes other
+windows to fit 640×480.
+
+The windowed path works (with dolomite's `ddraw.dll` providing the colour
+conversion), and it already copies the 640×432 back buffer to a destination rectangle
+`{L,T,R,B}` at `0x5bdf7c`, recomputed on `WM_MOVE`/`WM_SIZE` (WndProc `0x448234`) from
+`GetClientRect` + `ClientToScreen`. DirectDraw `Blt` stretches to that rectangle.
+
+Patches:
+
+| Address | Original | Patched |
+|---|---|---|
+| `0x47b24c` (data) | `1` | `0`: always start in the windowed renderer |
+| `0x446744` | `and eax,0x7fffffff; or eax,0xc60000` | `and eax,0xff00ffff; or eax,0x80000000`: `WS_POPUP`, no caption or frame |
+| `0x44675f` | `push 432; push 640` (before `SetRect`) | `call cave`: pushes `GetSystemMetrics(SM_CYSCREEN/SM_CXSCREEN)` |
+| `0x4467c8` | `push 0x16` (SetWindowPos flags) | `push 0x34`: move to 0,0 and `SWP_FRAMECHANGED` |
+| `0x446855` | `push 0x15` (work-area adjust) | `push 0x17`: keep the window at 0,0 |
+| `0x448258` | `jmp 0x448737` | `jmp cave`: shrink the rectangle to the largest centred 640:432 area |
+| `0x43fb61` | `ScreenToClient(hwnd, &cursor)` | `jmp cave`: `cursor = (screen − origin) × 640/432 ÷ extent`, clamped |
+| `0x448506` | `mov [0x47b24c], edx` (Alt+Enter toggle) | NOPs: never enter exclusive mode |
+| `0x4487db` | `WNDCLASS.hbrBackground = NULL` | `= COLOR_WINDOWTEXT+1`: black bars |
+
+The cursor is read in one place (`0x43fb3c`, `GetCursorPos` → `0x479fd8/0x479fdc`), and
+clicks use the same stored position, so one mapping covers all mouse input.
+
+## 4. CD check (not patched)
 
 If `CD Path` isn't set, `0x440320` scans drive letters C–Z for `DRIVE_CDROM` and looks
 for the disc's `volume` file. A mounted `.iso` satisfies this. The launcher created by

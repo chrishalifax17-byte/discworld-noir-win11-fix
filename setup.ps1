@@ -6,7 +6,6 @@
   - Creates HKCU\SOFTWARE\Perfect Entertainment\Discworld Noir, copying any
     settings the original installer left under HKLM, and points "HD Path" at
     your game folder.
-  - Sets fullscreen (default) or windowed mode.
   - Writes "Play Discworld Noir.bat" into the game folder. It mounts your
     disc image (the game checks for a CD) and starts the game.
   - Optionally creates Desktop and Start menu shortcuts.
@@ -18,7 +17,6 @@
 param(
   [Parameter(Mandatory = $true)][string]$GameDir,
   [string]$DiscImage = "",
-  [switch]$Windowed,
   [switch]$Shortcuts
 )
 $ErrorActionPreference = "Stop"
@@ -44,7 +42,11 @@ Set-ItemProperty $hkcu -Name "Install Path" -Value $GameDir
 if (-not (Get-ItemProperty $hkcu -Name "Sample Path" -ErrorAction SilentlyContinue)) {
   Set-ItemProperty $hkcu -Name "Sample Path" -Value (Join-Path $GameDir "cd1")
 }
-Set-ItemProperty $hkcu -Name "Start Windowed" -Value ($(if ($Windowed) { "Yes" } else { "No" }))
+Set-ItemProperty $hkcu -Name "Start Windowed" -Value "Yes"   # patched exe is always borderless-windowed
+$dolomite = Join-Path $GameDir "ddraw.dll"
+if (-not (Test-Path $dolomite)) {
+  Write-Warning "ddraw.dll (dolomite) not found in $GameDir - colours will be wrong without it. See README."
+}
 Write-Host "Settings written to $hkcu"
 
 $bat = Join-Path $GameDir "Play Discworld Noir.bat"
