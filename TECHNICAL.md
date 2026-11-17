@@ -101,7 +101,32 @@ Patches:
 The cursor is read in one place (`0x43fb3c`, `GetCursorPos` → `0x479fd8/0x479fdc`), and
 clicks use the same stored position, so one mapping covers all mouse input.
 
-## 4. CD check (not patched)
+## 4. Controller support (XInput)
+
+The game only reads input through Windows messages (`WM_MOUSE*`, `WM_KEY*`) and
+`GetCursorPos`. Both message loops (`0x43f597` main loop, `0x447f19`) call `PeekMessageA`
+through the import thunk at `0x464b9d` (`jmp [0x5ca4f0]`). The patch replaces that
+thunk with `jmp pad_hook`, which saves all registers, calls `pad_poll`, restores the
+registers and jumps on to the real `PeekMessageA`.
+
+`pad_poll` is written in C ([controller/noirpad.c](controller/noirpad.c)), compiled
+freestanding for i386 and linked at `0x5d6200` inside `.noirstk`
+([controller/build.sh](controller/build.sh) generates `noirpad_blob.py`). It:
+
+- calls only functions the game already imports, through its IAT (`GetModuleHandleA`,
+  `GetProcAddress`, `GetCursorPos`, `SetCursorPos`, `PostMessageA`,
+  `GetForegroundWindow`, `timeGetTime`), and resolves `LoadLibraryA` and
+  `XInputGetState` (`xinput1_4` / `1_3` / `9_1_0`) at runtime;
+- keeps its state in the zero-filled tail of the section's first page (`0x5d6f00`);
+- moves the real cursor with `SetCursorPos`, time-based and clamped to the picture
+  rectangle, so the game's own mouse code (and the display patch's mapping) applies;
+- posts `WM_LBUTTON*` / `WM_RBUTTON*` / `WM_LBUTTONDBLCLK` / `WM_KEYDOWN VK_ESCAPE` to the
+  game window on button edges. The game's handlers use the stored cursor position,
+  not `lParam`;
+- only acts while the game window has focus, and polls a disconnected controller at
+  most once a second, since XInput is slow on empty slots.
+
+## 5. CD check (not patched)
 
 If `CD Path` isn't set, `0x440320` scans drive letters C–Z for `DRIVE_CDROM` and looks
 for the disc's `volume` file. A mounted `.iso` satisfies this. The launcher created by

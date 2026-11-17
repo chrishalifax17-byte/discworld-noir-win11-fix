@@ -11,6 +11,21 @@ It fixes three problems that only show up on modern Windows:
 | Random crashes with **`ProcessSleep() error 2`**, `ProcessKill() error 3`, `ProcessDispatch() error 2`, etc. | Every script coroutine in the Tinsel engine runs on a ~2 KB private stack. Windows 9x fit in that; Windows 10/11 system calls overflow it and trip the engine's stack-guard assert. | Each of the 72 script processes gets its own 256 KB stack. |
 | In fullscreen, the picture turns **magenta, speckled or half-width**, and other windows and desktop icons get squashed, after alt-tab or a notification | Exclusive 640×480 fullscreen switches your desktop resolution and colour depth. When the game loses and regains focus it keeps drawing 16-bit pixels onto a 32-bit screen. | The game never changes your resolution. It runs **borderless fullscreen**: the picture is scaled to fill your screen height at the correct shape, with black bars, and the mouse is mapped to match. |
 
+It also adds **native Xbox controller support** (any XInput controller) with no extra
+software:
+
+| Control | Action |
+|---|---|
+| Left stick | Move the cursor (analogue) |
+| D-pad | Move the cursor slowly |
+| Left trigger (hold) | Slow, precise cursor |
+| A or right trigger | Left click: walk, look, talk, select |
+| B | Right click: notebook / cancel |
+| X | Double click: run |
+| Start or Back | Esc: game menu / skip |
+
+The mouse and keyboard keep working alongside the controller.
+
 See [TECHNICAL.md](TECHNICAL.md) for the reverse-engineering details.
 
 **This repository contains no game files.** You need your own installed copy of the game.
@@ -38,7 +53,8 @@ This patch does **not** remove or bypass copy protection.
    [dolomite releases](https://github.com/nathan-baggs/dolomite/releases) and copy it into
    the game folder (next to `tin3_dxd.exe`).
 
-2. **Patch the executable** (a backup is saved as `tin3_dxd.exe.orig`):
+2. **Patch the executable** (a backup is saved as `tin3_dxd.exe.orig`). Keep
+   `noirpad_blob.py` in the same folder as `patch_noir.py`:
 
    ```bat
    py -3 patch_noir.py "C:\DiscNoir\tin3_dxd.exe"
@@ -80,7 +96,7 @@ and `Play Discworld Noir.bat` if you like.
 
 ## Status
 
-Tested on Windows 11 (64-bit) at 1920×1080: boots, main menu, options menu, new game,
+Tested on Windows 11 (64-bit) at 1920×1080 with a wired Xbox controller: boots, main menu, options menu, new game,
 intro cutscene, walking and talking in the first scene, and minimise/restore. Reports
 from longer playthroughs and other resolutions are welcome.
 

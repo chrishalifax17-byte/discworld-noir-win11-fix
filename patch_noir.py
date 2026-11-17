@@ -121,7 +121,7 @@ def patch(data):
     jmp_from = cave_va + len(code) + 5
     code += b"\xe9" + struct.pack("<i", RETURN_VA - jmp_from)  # jmp back
 
-    raw_size = align(len(code), file_align)
+    raw_size = align(max(len(code), 0x800), file_align)   # caves + controller code
     raw_ptr = align(len(data), file_align)
     data += b"\0" * (raw_ptr - len(data))
     data += code + b"\0" * (raw_size - len(code))
@@ -142,7 +142,34 @@ def patch(data):
     # --- Fix 3: borderless scaled fullscreen -------------------------------
     patch_display(data, va_to_off, cave_va + len(code))
 
+    # --- Fix 4: Xbox / XInput controller support ---------------------------
+    patch_controller(data, va_to_off, cave_va)
+
     return data
+
+
+PEEKMESSAGE_THUNK = 0x464B9D       # jmp [PeekMessageA IAT]; called by both message loops
+PEEKMESSAGE_THUNK_ORIG = bytes.fromhex("ff25f0a45c00")
+
+
+def patch_controller(data, va_to_off, cave_va):
+    """Copy the compiled controller code (controller/noirpad.c) into the patch
+    section and route the PeekMessageA thunk through it."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    try:
+        from noirpad_blob import BASE, HOOK, BLOB
+    except ImportError:
+        sys.exit("noirpad_blob.py is missing - keep it next to patch_noir.py.")
+    if BASE != cave_va + 0x200:
+        sys.exit(f"Controller code was built for {BASE:#x}, section is at {cave_va:#x}.")
+    if BASE + len(BLOB) > cave_va + 0x800:
+        sys.exit("Controller code is too large for the patch section.")
+    off = va_to_off(PEEKMESSAGE_THUNK)
+    if bytes(data[off:off + 6]) != PEEKMESSAGE_THUNK_ORIG:
+        sys.exit("PeekMessageA thunk differs; not patching.")
+    boff = va_to_off(BASE)
+    data[boff:boff + len(BLOB)] = BLOB
+    data[off:off + 6] = b"\xe9" + struct.pack("<i", HOOK - (PEEKMESSAGE_THUNK + 5)) + b"\x90"
 
 
 # Addresses used by the display patch (see TECHNICAL.md).
